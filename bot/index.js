@@ -28,6 +28,7 @@ const trialHandler = require('./handlers/trial');
 const qrcodeHandler = require('./handlers/qrcode');
 const monitorHandler = require('./handlers/monitor');
 const auditHandler = require('./handlers/audit');
+const { initTrafficMonitor } = require('./utils/trafficMonitor');
 
 const { isAdminUser } = adminHandler;
 
@@ -39,6 +40,7 @@ console.log('🐱 DOTYCAT TUNNEL Bot started!');
 // Initialize auto-start modules
 autoexpireHandler.init(bot);
 monitorHandler.init(bot);
+initTrafficMonitor(bot);
 
 // Auth middleware - uses multi-admin system
 function authMiddleware(msg) {
