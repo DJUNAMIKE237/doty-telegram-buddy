@@ -1,0 +1,16 @@
+[Unit]
+Description=DOTYCAT Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/doty-telegram-buddy/bot
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/dotycat-bot.log
+StandardError=append:/var/log/dotycat-bot.log
+
+[Install]
+WantedBy=multi-user.target
