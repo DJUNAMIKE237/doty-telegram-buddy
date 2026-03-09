@@ -7,7 +7,7 @@ function getConfig() {
   try {
     return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
   } catch {
-    return { enabled: true, delay: 45, unit: 's' }; // default 45 seconds
+    return { enabled: true, delay: 45, unit: 's' };
   }
 }
 
@@ -29,9 +29,16 @@ function getDelayMs() {
 
 /**
  * Send a message that auto-deletes after configured delay
+ * Also deletes the user's message if userMsgId is provided
  */
-function autoDeleteSend(bot, chatId, text, opts = {}) {
+function autoDeleteSend(bot, chatId, text, opts = {}, userMsgId = null) {
   const delayMs = getDelayMs();
+  // Delete user message too
+  if (userMsgId && delayMs > 0) {
+    setTimeout(() => {
+      bot.deleteMessage(chatId, userMsgId).catch(() => {});
+    }, delayMs);
+  }
   return bot.sendMessage(chatId, text, opts).then(sent => {
     if (delayMs > 0) {
       setTimeout(() => {
