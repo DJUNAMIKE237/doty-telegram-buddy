@@ -132,7 +132,7 @@ async function handleCallback(bot, chatId, data, query, pendingActions) {
       { dir: '/etc/xray/users-trojan', proto: 'trojan', xray: 'trojan' },
       { dir: '/etc/xray/users-socks', proto: 'socks', xray: 'socks' },
       { dir: '/etc/ssh-users', proto: 'ssh' },
-      { dir: '/etc/udp/users', proto: 'udp' },
+      { dir: '/etc/UDPCustom/users', proto: 'udp' },
       { dir: '/etc/zivpn/users', proto: 'zivpn' },
       { dir: '/etc/slowdns/users', proto: 'dns' },
     ];
