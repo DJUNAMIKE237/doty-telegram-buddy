@@ -1,56 +1,72 @@
 /**
  * Xray config manipulation utilities
- * Uses protocol/tag-based jq selection instead of hardcoded indices
+ * Uses temp files for safe jq operations (avoids shell escaping issues)
  */
 const { runCommand } = require('./exec');
+const fs = require('fs');
+const path = require('path');
 
 const XRAY_CONFIG = '/etc/xray/config.json';
 
 /**
- * Find the inbound index for a given protocol or tag
+ * Safely read and parse xray config
  */
-async function findInboundIndex(protocol, tag) {
-  try {
-    // Try by tag first
-    if (tag) {
-      const idx = await runCommand(`jq '[.inbounds[].tag // empty] | to_entries[] | select(.value=="${tag}") | .key' ${XRAY_CONFIG} 2>/dev/null | head -1`);
-      if (idx !== '' && !isNaN(parseInt(idx))) return parseInt(idx);
-    }
-    // Fall back to protocol
-    const idx = await runCommand(`jq '[.inbounds[].protocol // empty] | to_entries[] | select(.value=="${protocol}") | .key' ${XRAY_CONFIG} 2>/dev/null | head -1`);
-    if (idx !== '' && !isNaN(parseInt(idx))) return parseInt(idx);
-    return null;
-  } catch { return null; }
+async function readXrayConfig() {
+  const raw = await runCommand(`cat ${XRAY_CONFIG}`);
+  return JSON.parse(raw);
 }
 
 /**
- * Add a client to xray config (protocol-based)
+ * Safely write xray config (with backup)
+ */
+async function writeXrayConfig(config) {
+  await runCommand(`cp ${XRAY_CONFIG} ${XRAY_CONFIG}.bak`);
+  const tmpFile = '/tmp/xray_config_tmp.json';
+  fs.writeFileSync(tmpFile, JSON.stringify(config, null, 2), 'utf8');
+  await runCommand(`mv ${tmpFile} ${XRAY_CONFIG}`);
+}
+
+/**
+ * Find inbound by protocol
+ */
+function findInbound(config, protocol) {
+  return config.inbounds ? config.inbounds.find(ib => ib.protocol === protocol) : null;
+}
+
+/**
+ * Add a client to xray config (direct JSON manipulation, no jq)
  */
 async function addClient(protocol, clientObj) {
-  await runCommand(`cd /etc/xray && cp config.json config.json.bak`);
   try {
-    const clientJson = JSON.stringify(clientObj).replace(/'/g, "'\\''");
-    // Use protocol-based selection
-    await runCommand(`cd /etc/xray && jq '(.inbounds[] | select(.protocol=="${protocol}")).settings.clients += [${clientJson}]' config.json > tmp_xray.json && mv tmp_xray.json config.json`);
+    const config = await readXrayConfig();
+    const inbound = findInbound(config, protocol);
+    if (!inbound) throw new Error(`Inbound ${protocol} non trouvé dans la config Xray`);
+    if (!inbound.settings) inbound.settings = {};
+    if (!inbound.settings.clients) inbound.settings.clients = [];
+    inbound.settings.clients.push(clientObj);
+    await writeXrayConfig(config);
     await runCommand('systemctl restart xray 2>/dev/null || true');
   } catch (err) {
-    // Restore backup
-    await runCommand('cd /etc/xray && [ -f config.json.bak ] && mv config.json.bak config.json || true').catch(() => {});
+    // Restore backup on failure
+    await runCommand(`[ -f ${XRAY_CONFIG}.bak ] && mv ${XRAY_CONFIG}.bak ${XRAY_CONFIG} || true`).catch(() => {});
     throw err;
   }
 }
 
 /**
- * Remove a client from xray config by email field
+ * Remove a client from xray config by email/user field
  */
 async function removeClient(protocol, email) {
-  const field = protocol === 'socks' ? 'user' : 'email';
-  await runCommand(`cd /etc/xray && cp config.json config.json.bak`);
   try {
-    await runCommand(`cd /etc/xray && jq 'del((.inbounds[] | select(.protocol=="${protocol}")).settings.clients[] | select(.${field}=="${email}"))' config.json > tmp_xray.json && mv tmp_xray.json config.json`);
+    const config = await readXrayConfig();
+    const inbound = findInbound(config, protocol);
+    if (!inbound || !inbound.settings || !inbound.settings.clients) return;
+    const field = protocol === 'socks' ? 'user' : 'email';
+    inbound.settings.clients = inbound.settings.clients.filter(c => c[field] !== email);
+    await writeXrayConfig(config);
     await runCommand('systemctl restart xray 2>/dev/null || true');
   } catch (err) {
-    await runCommand('cd /etc/xray && [ -f config.json.bak ] && mv config.json.bak config.json || true').catch(() => {});
+    await runCommand(`[ -f ${XRAY_CONFIG}.bak ] && mv ${XRAY_CONFIG}.bak ${XRAY_CONFIG} || true`).catch(() => {});
     throw err;
   }
 }
@@ -59,19 +75,24 @@ async function removeClient(protocol, email) {
  * Update a client field in xray config
  */
 async function updateClientField(protocol, email, field, value) {
-  const selector = protocol === 'socks' ? 'user' : 'email';
-  await runCommand(`cd /etc/xray && cp config.json config.json.bak`);
   try {
-    await runCommand(`cd /etc/xray && jq '((.inbounds[] | select(.protocol=="${protocol}")).settings.clients[] | select(.${selector}=="${email}")).${field} = "${value}"' config.json > tmp_xray.json && mv tmp_xray.json config.json`);
+    const config = await readXrayConfig();
+    const inbound = findInbound(config, protocol);
+    if (!inbound || !inbound.settings || !inbound.settings.clients) throw new Error('Client non trouvé');
+    const selector = protocol === 'socks' ? 'user' : 'email';
+    const client = inbound.settings.clients.find(c => c[selector] === email);
+    if (!client) throw new Error(`Client ${email} non trouvé`);
+    client[field] = value;
+    await writeXrayConfig(config);
     await runCommand('systemctl restart xray 2>/dev/null || true');
   } catch (err) {
-    await runCommand('cd /etc/xray && [ -f config.json.bak ] && mv config.json.bak config.json || true').catch(() => {});
+    await runCommand(`[ -f ${XRAY_CONFIG}.bak ] && mv ${XRAY_CONFIG}.bak ${XRAY_CONFIG} || true`).catch(() => {});
     throw err;
   }
 }
 
 /**
- * Update client email (rename)
+ * Rename client (update email field)
  */
 async function renameClient(protocol, oldEmail, newEmail) {
   const selector = protocol === 'socks' ? 'user' : 'email';
@@ -79,18 +100,57 @@ async function renameClient(protocol, oldEmail, newEmail) {
 }
 
 /**
- * Count active connections for a specific xray user via API
+ * Count active connections for a specific xray user
+ * Uses xray access log to count recent connections by email
  */
 async function countUserConnections(email) {
   try {
-    // Try xray API first (stats query for online users)
-    const result = await runCommand(`xray api statsquery --server=127.0.0.1:10085 -pattern "user>>>${email}>>>traffic>>>uplink" 2>/dev/null | grep -c "value" || echo 0`).catch(() => '0');
-    // Alternative: count via access log
-    const logCount = await runCommand(`grep -c '"${email}"' /var/log/xray/access.log 2>/dev/null | tail -1 || echo 0`).catch(() => '0');
-    // Use ss to count established connections associated with xray
+    // Method 1: Count from xray access log (last 60 seconds of activity)
+    const logCount = await runCommand(
+      `grep '${email}' /var/log/xray/access.log 2>/dev/null | awk -F'[ :]' '{print $1":"$2}' | sort -u | tail -60 | wc -l`
+    ).catch(() => '0');
+    if (parseInt(logCount) > 0) return parseInt(logCount);
+
+    // Method 2: Try xray API stats
+    try {
+      const result = await runCommand(
+        `xray api statsquery --server=127.0.0.1:10085 -pattern "user>>>${email}>>>traffic>>>uplink" 2>/dev/null`
+      );
+      // If we get a response, user has traffic = at least potentially connected
+      if (result && result.includes('value')) return 1;
+    } catch {}
+
+    // Method 3: Count established xray connections via ss
     const ssCount = await runCommand(`ss -tnp 2>/dev/null | grep xray | grep ESTAB | wc -l`).catch(() => '0');
     return parseInt(ssCount) || 0;
   } catch { return 0; }
 }
 
-module.exports = { findInboundIndex, addClient, removeClient, updateClientField, renameClient, countUserConnections };
+/**
+ * Get list of all clients for a protocol
+ */
+async function getClients(protocol) {
+  try {
+    const config = await readXrayConfig();
+    const inbound = findInbound(config, protocol);
+    if (!inbound || !inbound.settings || !inbound.settings.clients) return [];
+    return inbound.settings.clients;
+  } catch { return []; }
+}
+
+/**
+ * Get xray config inbound ports for a protocol
+ */
+async function getInboundPort(protocol) {
+  try {
+    const config = await readXrayConfig();
+    const inbound = findInbound(config, protocol);
+    return inbound ? inbound.port : null;
+  } catch { return null; }
+}
+
+module.exports = { 
+  readXrayConfig, writeXrayConfig, findInbound,
+  addClient, removeClient, updateClientField, renameClient, 
+  countUserConnections, getClients, getInboundPort 
+};
