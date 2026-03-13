@@ -90,10 +90,9 @@ async function handleCallback(bot, chatId, data, query, pendingActions) {
     case `${P}_status`: try { const s = await runCommand(`systemctl is-active ${UDP_SERVICE} 2>/dev/null || echo inactive`); editOrSend(bot, chatId, msgId, `🔌 UDP Custom: ${s.trim() === 'active' ? '✅ Active' : '❌ Inactive'}`, { reply_markup: backBtns() }); } catch (err) { editOrSend(bot, chatId, msgId, `❌ ${err.message}`, { reply_markup: backBtns() }); } break;
     case `${P}_restart`: try { await runCommand(`systemctl restart ${UDP_SERVICE} 2>/dev/null || true`); editOrSend(bot, chatId, msgId, '✅ UDP Custom redémarré.', { reply_markup: backBtns() }); } catch (err) { editOrSend(bot, chatId, msgId, `❌ ${err.message}`, { reply_markup: backBtns() }); } break;
     case `${P}_config`: try {
-      await ensureUdpConfig();
-      const config = readUdpConfig();
+      const { config, path } = await readUdpConfig();
       const text = config ? JSON.stringify(config, null, 2) : 'Config non trouvée';
-      editOrSend(bot, chatId, msgId, `⚙️ *UDP Config:*\n\`\`\`json\n${text}\n\`\`\``, { parse_mode: 'Markdown', reply_markup: backBtns() });
+      editOrSend(bot, chatId, msgId, `⚙️ *UDP Config (${path}):*\n\`\`\`json\n${text}\n\`\`\``, { parse_mode: 'Markdown', reply_markup: backBtns() });
     } catch (err) { editOrSend(bot, chatId, msgId, `❌ ${err.message}`, { reply_markup: backBtns() }); } break;
     default:
       if (data.startsWith(`${P}_del_`)) { const u = data.replace(`${P}_del_`, ''); editOrSend(bot, chatId, msgId, `⚠️ Supprimer *${u}* ?`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🗑 Supprimer', callback_data: `${P}_dely_${u}` }, { text: '❌ Annuler', callback_data: `${P}_deln_${u}` }]] } }); }
