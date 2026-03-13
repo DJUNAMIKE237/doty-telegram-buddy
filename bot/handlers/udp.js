@@ -233,9 +233,12 @@ async function showDetail(bot, chatId, msgId, username) {
     const limit = await getDataLimit(PROTO, username);
     const conn = await getConnLimit(PROTO, username);
     const online = await countUdpOnline();
-    const udpLink = `${host}:1-65535@${username}:${info.password}`;
-    let text = `━━━━━━━━━━━━━━━━━━━━━\n🔍 *UDP: ${username}*\n━━━━━━━━━━━━━━━━━━━━━\n🔑 Pass: \`${info.password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`1-65535\`\n📅 Expiry: \`${info.expiry}\`\n🔢 Max Conn: ${conn ? conn.maxConn : '♾'}\n👥 En ligne: ${online}\n📦 Quota: ${limit ? formatBytes(limit.limitBytes) : '♾'}\n👷 Créé par: ${info.createdBy || 'N/A'}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 Config: \`${udpLink}\``;
-    if (limit) text += progressBar(0, limit.limitBytes);
+    const traffic = await getUdpTraffic(username);
+    const { config } = await readUdpConfig();
+    const udpPort = getUdpListenPort(config);
+    const udpLink = `${host}:${udpPort}@${username}:${info.password}`;
+    let text = `━━━━━━━━━━━━━━━━━━━━━\n🔍 *UDP: ${username}*\n━━━━━━━━━━━━━━━━━━━━━\n🔑 Pass: \`${info.password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`${udpPort}\`\n📅 Expiry: \`${info.expiry}\`\n🔢 Max Conn: ${conn ? conn.maxConn : '♾'}\n👥 En ligne: ${online}\n📦 Quota: ${limit ? formatBytes(limit.limitBytes) : '♾'}\n⬆️ Upload: ${formatBytes(traffic.uplink)}\n⬇️ Download: ${formatBytes(traffic.downlink)}\n📊 Total: ${detailTraffic(traffic.total)}\n👷 Créé par: ${info.createdBy || 'N/A'}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 Config: \`${udpLink}\``;
+    if (limit) text += progressBar(traffic.total, limit.limitBytes);
     text += '\n━━━━━━━━━━━━━━━━━━━━━';
     editOrSend(bot, chatId, msgId, text, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔄 Actualiser', callback_data: `${PROTO}_det_${username}` }], [{ text: '🔙 Retour', callback_data: `menu_${PROTO}` }], [{ text: '🏠 ACCUEIL', callback_data: 'back_main' }]] } });
   } catch (err) { editOrSend(bot, chatId, msgId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
