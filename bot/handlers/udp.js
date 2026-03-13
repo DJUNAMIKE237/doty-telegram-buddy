@@ -1,14 +1,24 @@
 const { runCommand, getDomain, getServerIP } = require('../utils/exec');
 const { getExpiryDate, adjustExpiry } = require('../utils/helpers');
 const { paginatedKeyboard, getPageFromCallback } = require('../utils/pagination');
-const { formatBytes, parseLimitToBytes, setDataLimit, getDataLimit, removeDataLimit, setConnLimit, getConnLimit } = require('../utils/traffic');
+const { getUdpTraffic, formatBytes, parseLimitToBytes, setDataLimit, getDataLimit, removeDataLimit, setConnLimit, getConnLimit, countUdpConnections } = require('../utils/traffic');
 const { autoDeleteSend } = require('../utils/autodelete');
 const audit = require('../utils/audit');
 const fs = require('fs');
+const {
+  ensureUdpConfig,
+  readUdpConfig,
+  addUdpCredential,
+  removeUdpCredential,
+  updateUdpCredential,
+  getUdpListenPort,
+  syncUdpSystemUser,
+  renameUdpSystemUser,
+  removeUdpSystemUser,
+  isValidLinuxUsername,
+} = require('../utils/udpCustom');
 
-// UDP Custom paths (matching udp-custom install script)
-const UDP_DIR = '/etc/UDPCustom';
-const UDP_CONFIG = '/etc/UDPCustom/config.json';
+// UDP Custom paths
 const USERS_DB = '/etc/UDPCustom/users';
 const UDP_SERVICE = 'udp-custom';
 const PROTO = 'udp';
@@ -32,82 +42,6 @@ function detailTraffic(bytes) {
   return p.join(' + ') || `${bytes} B`;
 }
 
-/**
- * Read UDP config safely (direct JSON parse, no jq)
- */
-function readUdpConfig() {
-  try {
-    const raw = fs.readFileSync(UDP_CONFIG, 'utf8');
-    return JSON.parse(raw);
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Write UDP config safely
- */
-function writeUdpConfig(config) {
-  fs.writeFileSync(UDP_CONFIG, JSON.stringify(config, null, 2), 'utf8');
-}
-
-/**
- * Ensure UDP config exists with default structure
- */
-async function ensureUdpConfig() {
-  await runCommand(`mkdir -p ${UDP_DIR} ${USERS_DB}`);
-  let config = readUdpConfig();
-  if (!config) {
-    config = {
-      listen: ":1-65535",
-      stream_buffer: 16777216,
-      obfs: "random_padding",
-      auth: {
-        mode: "passwords",
-        config: []
-      }
-    };
-    writeUdpConfig(config);
-  }
-  return config;
-}
-
-async function addToUdpConfig(password) {
-  try {
-    const config = await ensureUdpConfig();
-    if (!config.auth) config.auth = { mode: "passwords", config: [] };
-    if (!config.auth.config) config.auth.config = [];
-    if (!config.auth.config.includes(password)) {
-      config.auth.config.push(password);
-      writeUdpConfig(config);
-    }
-    await runCommand(`systemctl restart ${UDP_SERVICE} 2>/dev/null || true`);
-  } catch (e) { console.error('addToUdpConfig error:', e.message); }
-}
-
-async function removeFromUdpConfig(password) {
-  try {
-    const config = readUdpConfig();
-    if (config && config.auth && config.auth.config) {
-      config.auth.config = config.auth.config.filter(p => p !== password);
-      writeUdpConfig(config);
-    }
-    await runCommand(`systemctl restart ${UDP_SERVICE} 2>/dev/null || true`);
-  } catch {}
-}
-
-async function updateUdpConfigPassword(oldPass, newPass) {
-  try {
-    const config = readUdpConfig();
-    if (config && config.auth && config.auth.config) {
-      const idx = config.auth.config.indexOf(oldPass);
-      if (idx >= 0) config.auth.config[idx] = newPass;
-      writeUdpConfig(config);
-    }
-    await runCommand(`systemctl restart ${UDP_SERVICE} 2>/dev/null || true`);
-  } catch {}
-}
-
 function showMenu(bot, chatId, msgId) {
   editOrSend(bot, chatId, msgId, `━━━━━━━━━━━━━━━━━━━━━\n🔌 *UDP CUSTOM MENU*\n━━━━━━━━━━━━━━━━━━━━━`, {
     parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
@@ -127,8 +61,7 @@ async function getUsers() { try { const r = await runCommand(`ls ${USERS_DB}/ 2>
 
 async function countUdpOnline() {
   try {
-    const result = await runCommand(`ss -unp 2>/dev/null | grep -i udp-custom | grep ESTAB | wc -l`).catch(() => '0');
-    return parseInt(result) || 0;
+    return await countUdpConnections();
   } catch { return 0; }
 }
 
@@ -157,10 +90,9 @@ async function handleCallback(bot, chatId, data, query, pendingActions) {
     case `${P}_status`: try { const s = await runCommand(`systemctl is-active ${UDP_SERVICE} 2>/dev/null || echo inactive`); editOrSend(bot, chatId, msgId, `🔌 UDP Custom: ${s.trim() === 'active' ? '✅ Active' : '❌ Inactive'}`, { reply_markup: backBtns() }); } catch (err) { editOrSend(bot, chatId, msgId, `❌ ${err.message}`, { reply_markup: backBtns() }); } break;
     case `${P}_restart`: try { await runCommand(`systemctl restart ${UDP_SERVICE} 2>/dev/null || true`); editOrSend(bot, chatId, msgId, '✅ UDP Custom redémarré.', { reply_markup: backBtns() }); } catch (err) { editOrSend(bot, chatId, msgId, `❌ ${err.message}`, { reply_markup: backBtns() }); } break;
     case `${P}_config`: try {
-      await ensureUdpConfig();
-      const config = readUdpConfig();
+      const { config, path } = await readUdpConfig();
       const text = config ? JSON.stringify(config, null, 2) : 'Config non trouvée';
-      editOrSend(bot, chatId, msgId, `⚙️ *UDP Config:*\n\`\`\`json\n${text}\n\`\`\``, { parse_mode: 'Markdown', reply_markup: backBtns() });
+      editOrSend(bot, chatId, msgId, `⚙️ *UDP Config (${path}):*\n\`\`\`json\n${text}\n\`\`\``, { parse_mode: 'Markdown', reply_markup: backBtns() });
     } catch (err) { editOrSend(bot, chatId, msgId, `❌ ${err.message}`, { reply_markup: backBtns() }); } break;
     default:
       if (data.startsWith(`${P}_del_`)) { const u = data.replace(`${P}_del_`, ''); editOrSend(bot, chatId, msgId, `⚠️ Supprimer *${u}* ?`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🗑 Supprimer', callback_data: `${P}_dely_${u}` }, { text: '❌ Annuler', callback_data: `${P}_deln_${u}` }]] } }); }
@@ -199,8 +131,11 @@ async function createUser(bot, chatId, username, password, days, connLimit, data
 
     await runCommand(`mkdir -p ${USERS_DB}`);
 
-    // Add password to UDP config (direct JSON manipulation)
-    await addToUdpConfig(password);
+    const { config } = await ensureUdpConfig();
+    const udpPort = getUdpListenPort(config);
+
+    await addUdpCredential(username, password);
+    await syncUdpSystemUser(username, password, expiry).catch(() => {});
 
     const userInfo = { username, password, expiry, locked: false, connLimit, dataLimit: dataLimitBytes, createdBy: createdByName || String(createdById || 'unknown'), createdById: createdById || null, createdAt: new Date().toISOString() };
     fs.writeFileSync(`${USERS_DB}/${username}.json`, JSON.stringify(userInfo, null, 2), 'utf8');
@@ -209,10 +144,9 @@ async function createUser(bot, chatId, username, password, days, connLimit, data
     if (dataLimitBytes > 0) await setDataLimit(PROTO, username, dataLimitBytes);
     audit.log(createdById, PROTO, `Créé ${username}`);
 
-    // UDP Custom format: host:1-65535@user:password
-    const udpLink = `${host}:1-65535@${username}:${password}`;
+    const udpLink = `${host}:${udpPort}@${username}:${password}`;
 
-    bot.sendMessage(chatId, `━━━━━━━━━━━━━━━━━━━━━\n✅ *UDP Custom Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 Pass: \`${password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`1-65535\`\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *Configuration UDP:*\n\`${udpLink}\`\n━━━━━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown', reply_markup: backBtns() });
+    bot.sendMessage(chatId, `━━━━━━━━━━━━━━━━━━━━━\n✅ *UDP Custom Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 Pass: \`${password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`${udpPort}\`\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *Configuration UDP:*\n\`${udpLink}\`\n━━━━━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown', reply_markup: backBtns() });
   } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
 }
 
@@ -222,11 +156,13 @@ async function handleModifyUsername(bot, chatId, text, pending, pendingActions) 
     const raw = fs.readFileSync(`${USERS_DB}/${pending.user}.json`, 'utf8');
     const info = JSON.parse(raw);
     const n = text.trim();
-    await removeFromUdpConfig(info.password);
+    if (!isValidLinuxUsername(n)) return bot.sendMessage(chatId, '❌ Username invalide (a-z, 0-9, _ ou -, min 3).', { reply_markup: backBtns() });
+    await removeUdpCredential(pending.user, info.password);
     info.username = n;
     fs.writeFileSync(`${USERS_DB}/${n}.json`, JSON.stringify(info, null, 2), 'utf8');
     try { fs.unlinkSync(`${USERS_DB}/${pending.user}.json`); } catch {}
-    await addToUdpConfig(info.password);
+    await addUdpCredential(n, info.password);
+    await renameUdpSystemUser(pending.user, n).catch(() => {});
     audit.log(pending.fromId, PROTO, `Modifié: ${pending.user} → ${n}`);
     bot.sendMessage(chatId, `✅ *${pending.user}* → *${n}*`, { parse_mode: 'Markdown', reply_markup: backBtns() });
   } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
@@ -239,9 +175,10 @@ async function handleModifyPassword(bot, chatId, text, pending, pendingActions) 
     const info = JSON.parse(raw);
     const op = info.password;
     const np = text.trim();
-    await updateUdpConfigPassword(op, np);
+    await updateUdpCredential(pending.user, op, np);
     info.password = np;
     fs.writeFileSync(`${USERS_DB}/${pending.user}.json`, JSON.stringify(info, null, 2), 'utf8');
+    await syncUdpSystemUser(pending.user, np, info.expiry).catch(() => {});
     audit.log(pending.fromId, PROTO, `Password modifié: ${pending.user}`);
     bot.sendMessage(chatId, '✅ Password mis à jour.', { reply_markup: backBtns() });
   } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
@@ -256,6 +193,7 @@ async function handleRenewFlow(bot, chatId, text, pending, pendingActions) {
     const ne = adjustExpiry(info.expiry, pending.sign === 's' ? -amount : amount, { d: 'days', h: 'hours', m: 'minutes' }[pending.unit]);
     info.expiry = ne;
     fs.writeFileSync(`${USERS_DB}/${pending.user}.json`, JSON.stringify(info, null, 2), 'utf8');
+    await syncUdpSystemUser(pending.user, info.password, ne).catch(() => {});
     audit.log(pending.fromId, PROTO, `Renouvelé ${pending.user}`);
     bot.sendMessage(chatId, `✅ UDP *${pending.user}* → *${ne}*`, { parse_mode: 'Markdown', reply_markup: backBtns() });
   } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
@@ -265,7 +203,8 @@ async function deleteUser(bot, chatId, msgId, username, userId) {
   try {
     const raw = fs.readFileSync(`${USERS_DB}/${username}.json`, 'utf8');
     const info = JSON.parse(raw);
-    await removeFromUdpConfig(info.password);
+    await removeUdpCredential(username, info.password);
+    await removeUdpSystemUser(username).catch(() => {});
     try { fs.unlinkSync(`${USERS_DB}/${username}.json`); } catch {}
     await removeDataLimit(PROTO, username);
     audit.log(userId, PROTO, `Supprimé ${username}`);
@@ -294,9 +233,12 @@ async function showDetail(bot, chatId, msgId, username) {
     const limit = await getDataLimit(PROTO, username);
     const conn = await getConnLimit(PROTO, username);
     const online = await countUdpOnline();
-    const udpLink = `${host}:1-65535@${username}:${info.password}`;
-    let text = `━━━━━━━━━━━━━━━━━━━━━\n🔍 *UDP: ${username}*\n━━━━━━━━━━━━━━━━━━━━━\n🔑 Pass: \`${info.password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`1-65535\`\n📅 Expiry: \`${info.expiry}\`\n🔢 Max Conn: ${conn ? conn.maxConn : '♾'}\n👥 En ligne: ${online}\n📦 Quota: ${limit ? formatBytes(limit.limitBytes) : '♾'}\n👷 Créé par: ${info.createdBy || 'N/A'}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 Config: \`${udpLink}\``;
-    if (limit) text += progressBar(0, limit.limitBytes);
+    const traffic = await getUdpTraffic(username);
+    const { config } = await readUdpConfig();
+    const udpPort = getUdpListenPort(config);
+    const udpLink = `${host}:${udpPort}@${username}:${info.password}`;
+    let text = `━━━━━━━━━━━━━━━━━━━━━\n🔍 *UDP: ${username}*\n━━━━━━━━━━━━━━━━━━━━━\n🔑 Pass: \`${info.password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`${udpPort}\`\n📅 Expiry: \`${info.expiry}\`\n🔢 Max Conn: ${conn ? conn.maxConn : '♾'}\n👥 En ligne: ${online}\n📦 Quota: ${limit ? formatBytes(limit.limitBytes) : '♾'}\n⬆️ Upload: ${formatBytes(traffic.uplink)}\n⬇️ Download: ${formatBytes(traffic.downlink)}\n📊 Total: ${detailTraffic(traffic.total)}\n👷 Créé par: ${info.createdBy || 'N/A'}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 Config: \`${udpLink}\``;
+    if (limit) text += progressBar(traffic.total, limit.limitBytes);
     text += '\n━━━━━━━━━━━━━━━━━━━━━';
     editOrSend(bot, chatId, msgId, text, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔄 Actualiser', callback_data: `${PROTO}_det_${username}` }], [{ text: '🔙 Retour', callback_data: `menu_${PROTO}` }], [{ text: '🏠 ACCUEIL', callback_data: 'back_main' }]] } });
   } catch (err) { editOrSend(bot, chatId, msgId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
@@ -304,9 +246,10 @@ async function showDetail(bot, chatId, msgId, username) {
 
 async function showTraffic(bot, chatId, msgId, username) {
   try {
+    const traffic = await getUdpTraffic(username);
     const limit = await getDataLimit(PROTO, username);
-    let text = `━━━━━━━━━━━━━━━━━━━━━\n📊 *Trafic UDP: ${username}*\n━━━━━━━━━━━━━━━━━━━━━\n📊 Surveillance active`;
-    if (limit) { text += `\n📦 Quota: ${formatBytes(limit.limitBytes)}`; text += progressBar(0, limit.limitBytes); }
+    let text = `━━━━━━━━━━━━━━━━━━━━━\n📊 *Trafic UDP: ${username}*\n━━━━━━━━━━━━━━━━━━━━━\n⬆️ Upload: ${formatBytes(traffic.uplink)}\n⬇️ Download: ${formatBytes(traffic.downlink)}\n📊 Total: ${formatBytes(traffic.total)}\n📋 Détail: ${detailTraffic(traffic.total)}`;
+    if (limit) { text += `\n📦 Quota: ${formatBytes(limit.limitBytes)}\n📈 Utilisé: ${((traffic.total / limit.limitBytes) * 100).toFixed(1)}%`; text += progressBar(traffic.total, limit.limitBytes); }
     text += '\n━━━━━━━━━━━━━━━━━━━━━';
     editOrSend(bot, chatId, msgId, text, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔄 Actualiser', callback_data: `${PROTO}_trr_${username}` }], [{ text: '🔙 Retour', callback_data: `menu_${PROTO}` }], [{ text: '🏠 ACCUEIL', callback_data: 'back_main' }]] } });
   } catch (err) { editOrSend(bot, chatId, msgId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }

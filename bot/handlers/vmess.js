@@ -3,7 +3,7 @@ const { generateUUID, getExpiryDate, adjustExpiry } = require('../utils/helpers'
 const { paginatedKeyboard, getPageFromCallback } = require('../utils/pagination');
 const { getXrayTraffic, formatBytes, parseLimitToBytes, setDataLimit, getDataLimit, removeDataLimit, setConnLimit, getConnLimit } = require('../utils/traffic');
 const { autoDeleteSend } = require('../utils/autodelete');
-const { addClient, removeClient, updateClientField, renameClient, countUserConnections } = require('../utils/xray');
+const { addClient, removeClient, updateClientField, renameClient, countUserConnections, getProtocolProfiles } = require('../utils/xray');
 const audit = require('../utils/audit');
 
 const USERS_DB = '/etc/xray/users-vmess';
@@ -88,17 +88,53 @@ async function handleCreateFlow(bot, chatId, text, pending, pendingActions, user
 
 async function createUser(bot, chatId, username, days, connLimit, dataLimitBytes, createdById, createdByName) {
   try {
-    const uuid = generateUUID(); const expiry = getExpiryDate(days); const domain = await getDomain();
+    const uuid = generateUUID();
+    const expiry = getExpiryDate(days);
+    const domain = await getDomain();
     await runCommand(`mkdir -p ${USERS_DB}`);
+
     await addClient(XRAY_PROTO, { id: uuid, alterId: 0, email: username, level: 0 });
+
     const userInfo = { username, uuid, expiry, protocol: PROTO, locked: false, connLimit, dataLimit: dataLimitBytes, createdBy: createdByName || String(createdById || 'unknown'), createdById: createdById || null, createdAt: new Date().toISOString() };
     await runCommand(`echo '${JSON.stringify(userInfo)}' > ${USERS_DB}/${username}.json`);
     if (connLimit > 0) await setConnLimit(PROTO, username, connLimit);
     if (dataLimitBytes > 0) await setDataLimit(PROTO, username, dataLimitBytes);
     audit.log(createdById, PROTO, `Créé ${username}`);
-    const vc = (ps, port, tls, net, pathVal) => Buffer.from(JSON.stringify({ v: "2", ps, add: domain, port, id: uuid, aid: "0", scy: "auto", net, type: net === 'grpc' ? 'gun' : 'none', host: domain, path: pathVal, tls, sni: domain, alpn: "" })).toString('base64');
-    bot.sendMessage(chatId, `━━━━━━━━━━━━━━━━━━━━━\n✅ *VMESS Account Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 UUID: \`${uuid}\`\n🌐 Domain: \`${domain}\`\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *WS TLS:*\n\`vmess://${vc(`${username}_WS-TLS`, "443", "tls", "ws", "/vmess")}\`\n\n🔗 *WS Non-TLS:*\n\`vmess://${vc(`${username}_WS-NTLS`, "80", "", "ws", "/vmess")}\`\n\n🔗 *gRPC:*\n\`vmess://${vc(`${username}_gRPC`, "443", "tls", "grpc", "vmess-grpc")}\`\n━━━━━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown', reply_markup: backBtns() });
-  } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
+
+    const profiles = await getProtocolProfiles(XRAY_PROTO);
+    const wsTls = profiles.find(p => p.network === 'ws' && p.security === 'tls') || profiles.find(p => p.security === 'tls') || { port: 443, path: '/vmess', security: 'tls' };
+    const wsNtls = profiles.find(p => p.network === 'ws' && p.security !== 'tls') || profiles.find(p => p.security !== 'tls') || { port: 80, path: '/vmess', security: 'none' };
+    const grpc = profiles.find(p => p.network === 'grpc' && p.security === 'tls') || profiles.find(p => p.network === 'grpc') || { port: wsTls.port || 443, serviceName: 'vmess-grpc', security: 'tls' };
+
+    const vc = (ps, port, tls, net, pathVal, host) => Buffer.from(JSON.stringify({
+      v: '2',
+      ps,
+      add: domain,
+      port: String(port),
+      id: uuid,
+      aid: '0',
+      scy: 'zero',
+      net,
+      type: net === 'grpc' ? 'gun' : 'none',
+      host,
+      path: pathVal,
+      tls,
+      sni: tls ? domain : '',
+      alpn: '',
+      fp: ''
+    })).toString('base64');
+
+    const wsTlsPath = wsTls.path || '/vmess';
+    const wsNtlsPath = wsNtls.path || '/vmess';
+    const grpcService = grpc.serviceName || 'vmess-grpc';
+
+    bot.sendMessage(chatId,
+      `━━━━━━━━━━━━━━━━━━━━━\n✅ *VMESS Account Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 UUID: \`${uuid}\`\n🌐 Domain: \`${domain}\`\n🔌 Ports: TLS [${wsTls.port}] | Non-TLS [${wsNtls.port}] | gRPC [${grpc.port}]\n📁 WS Path: TLS [${wsTlsPath}] | Non-TLS [${wsNtlsPath}]\n📡 gRPC: ${grpcService}\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *WS TLS:*\n\`vmess://${vc(`${username}_WS-TLS`, wsTls.port, wsTls.security === 'tls' ? 'tls' : '', 'ws', wsTlsPath, domain)}\`\n\n🔗 *WS Non-TLS:*\n\`vmess://${vc(`${username}_WS-NTLS`, wsNtls.port, '', 'ws', wsNtlsPath, domain)}\`\n\n🔗 *gRPC:*\n\`vmess://${vc(`${username}_gRPC`, grpc.port, grpc.security === 'tls' ? 'tls' : '', 'grpc', grpcService, domain)}\`\n━━━━━━━━━━━━━━━━━━━━━`,
+      { parse_mode: 'Markdown', reply_markup: backBtns() }
+    );
+  } catch (err) {
+    bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() });
+  }
 }
 
 async function handleModifyUsername(bot, chatId, text, pending, pendingActions) {
