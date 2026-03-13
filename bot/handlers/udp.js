@@ -202,7 +202,8 @@ async function deleteUser(bot, chatId, msgId, username, userId) {
   try {
     const raw = fs.readFileSync(`${USERS_DB}/${username}.json`, 'utf8');
     const info = JSON.parse(raw);
-    await removeFromUdpConfig(info.password);
+    await removeUdpCredential(username, info.password);
+    await removeUdpSystemUser(username).catch(() => {});
     try { fs.unlinkSync(`${USERS_DB}/${username}.json`); } catch {}
     await removeDataLimit(PROTO, username);
     audit.log(userId, PROTO, `Supprimé ${username}`);
