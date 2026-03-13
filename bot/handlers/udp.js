@@ -193,6 +193,7 @@ async function handleRenewFlow(bot, chatId, text, pending, pendingActions) {
     const ne = adjustExpiry(info.expiry, pending.sign === 's' ? -amount : amount, { d: 'days', h: 'hours', m: 'minutes' }[pending.unit]);
     info.expiry = ne;
     fs.writeFileSync(`${USERS_DB}/${pending.user}.json`, JSON.stringify(info, null, 2), 'utf8');
+    await syncUdpSystemUser(pending.user, info.password, ne).catch(() => {});
     audit.log(pending.fromId, PROTO, `Renouvelé ${pending.user}`);
     bot.sendMessage(chatId, `✅ UDP *${pending.user}* → *${ne}*`, { parse_mode: 'Markdown', reply_markup: backBtns() });
   } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
