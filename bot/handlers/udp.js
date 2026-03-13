@@ -156,11 +156,13 @@ async function handleModifyUsername(bot, chatId, text, pending, pendingActions) 
     const raw = fs.readFileSync(`${USERS_DB}/${pending.user}.json`, 'utf8');
     const info = JSON.parse(raw);
     const n = text.trim();
-    await removeFromUdpConfig(info.password);
+    if (!isValidLinuxUsername(n)) return bot.sendMessage(chatId, '❌ Username invalide (a-z, 0-9, _ ou -, min 3).', { reply_markup: backBtns() });
+    await removeUdpCredential(pending.user, info.password);
     info.username = n;
     fs.writeFileSync(`${USERS_DB}/${n}.json`, JSON.stringify(info, null, 2), 'utf8');
     try { fs.unlinkSync(`${USERS_DB}/${pending.user}.json`); } catch {}
-    await addToUdpConfig(info.password);
+    await addUdpCredential(n, info.password);
+    await renameUdpSystemUser(pending.user, n).catch(() => {});
     audit.log(pending.fromId, PROTO, `Modifié: ${pending.user} → ${n}`);
     bot.sendMessage(chatId, `✅ *${pending.user}* → *${n}*`, { parse_mode: 'Markdown', reply_markup: backBtns() });
   } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
