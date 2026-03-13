@@ -57,15 +57,12 @@ async function checkAllQuotas(bot) {
           if (protocol === 'ssh') {
             await runCommand(`passwd -l ${username} 2>/dev/null || true`);
           } else if (protocol === 'udp') {
-            // Remove password from UDP config
             try {
               const usersDir = '/etc/UDPCustom/users';
               const userInfo = JSON.parse(fs.readFileSync(`${usersDir}/${username}.json`, 'utf8'));
               if (userInfo.password) {
-                const udpConfig = JSON.parse(fs.readFileSync('/etc/UDPCustom/config.json', 'utf8'));
-                udpConfig.auth.config = udpConfig.auth.config.filter(p => p !== userInfo.password);
-                fs.writeFileSync('/etc/UDPCustom/config.json', JSON.stringify(udpConfig, null, 2), 'utf8');
-                await runCommand('systemctl restart udp-custom 2>/dev/null || true');
+                await removeUdpCredential(username, userInfo.password);
+                await lockUdpSystemUser(username);
               }
             } catch {}
           } else {
