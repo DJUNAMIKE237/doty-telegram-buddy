@@ -131,8 +131,11 @@ async function createUser(bot, chatId, username, password, days, connLimit, data
 
     await runCommand(`mkdir -p ${USERS_DB}`);
 
-    // Add password to UDP config (direct JSON manipulation)
-    await addToUdpConfig(password);
+    const { config } = await ensureUdpConfig();
+    const udpPort = getUdpListenPort(config);
+
+    await addUdpCredential(username, password);
+    await syncUdpSystemUser(username, password, expiry).catch(() => {});
 
     const userInfo = { username, password, expiry, locked: false, connLimit, dataLimit: dataLimitBytes, createdBy: createdByName || String(createdById || 'unknown'), createdById: createdById || null, createdAt: new Date().toISOString() };
     fs.writeFileSync(`${USERS_DB}/${username}.json`, JSON.stringify(userInfo, null, 2), 'utf8');
@@ -141,10 +144,9 @@ async function createUser(bot, chatId, username, password, days, connLimit, data
     if (dataLimitBytes > 0) await setDataLimit(PROTO, username, dataLimitBytes);
     audit.log(createdById, PROTO, `Créé ${username}`);
 
-    // UDP Custom format: host:1-65535@user:password
-    const udpLink = `${host}:1-65535@${username}:${password}`;
+    const udpLink = `${host}:${udpPort}@${username}:${password}`;
 
-    bot.sendMessage(chatId, `━━━━━━━━━━━━━━━━━━━━━\n✅ *UDP Custom Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 Pass: \`${password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`1-65535\`\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *Configuration UDP:*\n\`${udpLink}\`\n━━━━━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown', reply_markup: backBtns() });
+    bot.sendMessage(chatId, `━━━━━━━━━━━━━━━━━━━━━\n✅ *UDP Custom Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 Pass: \`${password}\`\n🌐 Host: \`${host}\`\n🔌 Port: \`${udpPort}\`\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *Configuration UDP:*\n\`${udpLink}\`\n━━━━━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown', reply_markup: backBtns() });
   } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
 }
 
