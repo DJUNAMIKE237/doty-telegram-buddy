@@ -161,7 +161,7 @@ async function createUser(bot, chatId, username, days, connLimit, dataLimitBytes
     const grpcService = encodeURIComponent(grpc.serviceName || 'vless-grpc');
 
     const wsLink = `vless://${uuid}@${domain}:${wsTls.port}?security=${wsTls.security === 'tls' ? 'tls' : 'none'}&type=ws&path=${wsTlsPath}&host=${domain}&sni=${domain}#${username}`;
-    const wsNtls = `vless://${uuid}@${domain}:${wsNtls.port}?security=none&type=ws&path=${wsNtlsPath}&host=${domain}#${username}`;
+    const wsNtlsLink = `vless://${uuid}@${domain}:${wsNtls.port}?security=none&type=ws&path=${wsNtlsPath}&host=${domain}#${username}`;
     const grpcLink = `vless://${uuid}@${domain}:${grpc.port}?mode=grpc&security=${grpc.security === 'tls' ? 'tls' : 'none'}&serviceName=${grpcService}${grpc.security === 'tls' ? `&sni=${domain}` : ''}#${username}`;
 
     bot.sendMessage(chatId,
