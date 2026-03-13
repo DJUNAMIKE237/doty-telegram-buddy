@@ -138,11 +138,12 @@ async function handleCreateFlow(bot, chatId, text, pending, pendingActions, user
 
 async function createUser(bot, chatId, username, days, connLimit, dataLimitBytes, createdById, createdByName) {
   try {
-    const uuid = generateUUID(); const expiry = getExpiryDate(days); const domain = await getDomain();
+    const uuid = generateUUID();
+    const expiry = getExpiryDate(days);
+    const domain = await getDomain();
     await runCommand(`mkdir -p ${USERS_DB}`);
 
-    // Use protocol-based xray config manipulation (no hardcoded index)
-    await addClient(XRAY_PROTO, { id: uuid, email: username, level: 0 });
+    await addClient(XRAY_PROTO, { id: uuid, email: username, level: 0, encryption: 'none' });
 
     const userInfo = { username, uuid, expiry, protocol: PROTO, locked: false, connLimit, dataLimit: dataLimitBytes, createdBy: createdByName || String(createdById || 'unknown'), createdById: createdById || null, createdAt: new Date().toISOString() };
     await runCommand(`echo '${JSON.stringify(userInfo)}' > ${USERS_DB}/${username}.json`);
@@ -150,12 +151,21 @@ async function createUser(bot, chatId, username, days, connLimit, dataLimitBytes
     if (dataLimitBytes > 0) await setDataLimit(PROTO, username, dataLimitBytes);
     audit.log(createdById, PROTO, `Créé ${username} (${days}j, conn:${connLimit || '♾'}, data:${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'})`);
 
-    const wsLink = `vless://${uuid}@${domain}:443?type=ws&security=tls&path=%2Fvless&host=${domain}&sni=${domain}#${username}_WS-TLS`;
-    const wsNtls = `vless://${uuid}@${domain}:80?type=ws&path=%2Fvless&host=${domain}#${username}_WS-NTLS`;
-    const grpcLink = `vless://${uuid}@${domain}:443?type=grpc&security=tls&serviceName=vless-grpc&sni=${domain}#${username}_gRPC`;
+    const profiles = await getProtocolProfiles(XRAY_PROTO);
+    const wsTls = profiles.find(p => p.network === 'ws' && p.security === 'tls') || profiles.find(p => p.security === 'tls') || { port: 443, path: '/vless', security: 'tls' };
+    const wsNtls = profiles.find(p => p.network === 'ws' && p.security !== 'tls') || profiles.find(p => p.security !== 'tls') || { port: 80, path: '/vless', security: 'none' };
+    const grpc = profiles.find(p => p.network === 'grpc' && p.security === 'tls') || profiles.find(p => p.network === 'grpc') || { port: wsTls.port || 443, serviceName: 'vless-grpc', security: 'tls' };
+
+    const wsTlsPath = encodeURIComponent(wsTls.path || '/vless');
+    const wsNtlsPath = encodeURIComponent(wsNtls.path || '/vless');
+    const grpcService = encodeURIComponent(grpc.serviceName || 'vless-grpc');
+
+    const wsLink = `vless://${uuid}@${domain}:${wsTls.port}?security=${wsTls.security === 'tls' ? 'tls' : 'none'}&type=ws&path=${wsTlsPath}&host=${domain}&sni=${domain}#${username}`;
+    const wsNtls = `vless://${uuid}@${domain}:${wsNtls.port}?security=none&type=ws&path=${wsNtlsPath}&host=${domain}#${username}`;
+    const grpcLink = `vless://${uuid}@${domain}:${grpc.port}?mode=grpc&security=${grpc.security === 'tls' ? 'tls' : 'none'}&serviceName=${grpcService}${grpc.security === 'tls' ? `&sni=${domain}` : ''}#${username}`;
 
     bot.sendMessage(chatId,
-      `━━━━━━━━━━━━━━━━━━━━━\n✅ *VLESS Account Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 UUID: \`${uuid}\`\n🌐 Domain: \`${domain}\`\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *WS TLS:*\n\`${wsLink}\`\n\n🔗 *WS Non-TLS:*\n\`${wsNtls}\`\n\n🔗 *gRPC:*\n\`${grpcLink}\`\n━━━━━━━━━━━━━━━━━━━━━`,
+      `━━━━━━━━━━━━━━━━━━━━━\n✅ *VLESS Account Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 UUID: \`${uuid}\`\n🌐 Domain: \`${domain}\`\n🔌 Ports: TLS [${wsTls.port}] | Non-TLS [${wsNtls.port}] | gRPC [${grpc.port}]\n📁 WS Path: TLS [${wsTls.path || '/vless'}] | Non-TLS [${wsNtls.path || '/vless'}]\n📡 gRPC: ${grpc.serviceName || 'vless-grpc'}\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *WS TLS:*\n\`${wsLink}\`\n\n🔗 *WS Non-TLS:*\n\`${wsNtls}\`\n\n🔗 *gRPC:*\n\`${grpcLink}\`\n━━━━━━━━━━━━━━━━━━━━━`,
       { parse_mode: 'Markdown', reply_markup: backBtns() });
   } catch (err) {
     bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() });

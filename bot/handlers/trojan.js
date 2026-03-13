@@ -88,18 +88,39 @@ async function handleCreateFlow(bot, chatId, text, pending, pendingActions, user
 
 async function createUser(bot, chatId, username, days, connLimit, dataLimitBytes, createdById, createdByName) {
   try {
-    const password = generateUUID().split('-')[0]; const expiry = getExpiryDate(days); const domain = await getDomain();
+    const password = generateUUID().split('-')[0];
+    const expiry = getExpiryDate(days);
+    const domain = await getDomain();
     await runCommand(`mkdir -p ${USERS_DB}`);
+
     await addClient(XRAY_PROTO, { password, email: username, level: 0 });
+
     const userInfo = { username, password, expiry, protocol: PROTO, locked: false, connLimit, dataLimit: dataLimitBytes, createdBy: createdByName || String(createdById || 'unknown'), createdById: createdById || null, createdAt: new Date().toISOString() };
     await runCommand(`echo '${JSON.stringify(userInfo)}' > ${USERS_DB}/${username}.json`);
     if (connLimit > 0) await setConnLimit(PROTO, username, connLimit);
     if (dataLimitBytes > 0) await setDataLimit(PROTO, username, dataLimitBytes);
     audit.log(createdById, PROTO, `Créé ${username}`);
-    const wsLink = `trojan://${password}@${domain}:443?type=ws&security=tls&path=%2Ftrws&host=${domain}&sni=${domain}#${username}_WS-TLS`;
-    const grpcLink = `trojan://${password}@${domain}:443?type=grpc&security=tls&serviceName=trojan-grpc&sni=${domain}#${username}_gRPC`;
-    bot.sendMessage(chatId, `━━━━━━━━━━━━━━━━━━━━━\n✅ *TROJAN Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 Password: \`${password}\`\n🌐 Domain: \`${domain}\`\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *WS TLS:*\n\`${wsLink}\`\n\n🔗 *gRPC:*\n\`${grpcLink}\`\n━━━━━━━━━━━━━━━━━━━━━`, { parse_mode: 'Markdown', reply_markup: backBtns() });
-  } catch (err) { bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() }); }
+
+    const profiles = await getProtocolProfiles(XRAY_PROTO);
+    const wsTls = profiles.find(p => p.network === 'ws' && p.security === 'tls') || profiles.find(p => p.security === 'tls') || { port: 443, path: '/trojan', security: 'tls' };
+    const wsNtls = profiles.find(p => p.network === 'ws' && p.security !== 'tls') || profiles.find(p => p.security !== 'tls') || { port: 80, path: '/trojan', security: 'none' };
+    const grpc = profiles.find(p => p.network === 'grpc' && p.security === 'tls') || profiles.find(p => p.network === 'grpc') || { port: wsTls.port || 443, serviceName: 'trojan-grpc', security: 'tls' };
+
+    const wsTlsPath = encodeURIComponent(wsTls.path || '/trojan');
+    const wsNtlsPath = encodeURIComponent(wsNtls.path || '/trojan');
+    const grpcService = encodeURIComponent(grpc.serviceName || 'trojan-grpc');
+
+    const wsLink = `trojan://${password}@${domain}:${wsTls.port}?type=ws&security=${wsTls.security === 'tls' ? 'tls' : 'none'}&path=${wsTlsPath}&host=${domain}&sni=${domain}#${username}`;
+    const wsNtlsLink = `trojan://${password}@${domain}:${wsNtls.port}?type=ws&security=none&path=${wsNtlsPath}&host=${domain}#${username}`;
+    const grpcLink = `trojan://${password}@${domain}:${grpc.port}?type=grpc&security=${grpc.security === 'tls' ? 'tls' : 'none'}&serviceName=${grpcService}${grpc.security === 'tls' ? `&sni=${domain}` : ''}#${username}`;
+
+    bot.sendMessage(chatId,
+      `━━━━━━━━━━━━━━━━━━━━━\n✅ *TROJAN Created*\n━━━━━━━━━━━━━━━━━━━━━\n👤 User: \`${username}\`\n🔑 Password: \`${password}\`\n🌐 Domain: \`${domain}\`\n🔌 Ports: TLS [${wsTls.port}] | Non-TLS [${wsNtls.port}] | gRPC [${grpc.port}]\n📁 WS Path: TLS [${wsTls.path || '/trojan'}] | Non-TLS [${wsNtls.path || '/trojan'}]\n📡 gRPC: ${grpc.serviceName || 'trojan-grpc'}\n📅 Expiry: \`${expiry}\`\n🔢 Max Conn: ${connLimit || '♾'}\n📦 Quota: ${dataLimitBytes ? formatBytes(dataLimitBytes) : '♾'}\n👷 Créé par: ${createdByName || createdById}\n━━━━━━━━━━━━━━━━━━━━━\n🔗 *WS TLS:*\n\`${wsLink}\`\n\n🔗 *WS Non-TLS:*\n\`${wsNtlsLink}\`\n\n🔗 *gRPC:*\n\`${grpcLink}\`\n━━━━━━━━━━━━━━━━━━━━━`,
+      { parse_mode: 'Markdown', reply_markup: backBtns() }
+    );
+  } catch (err) {
+    bot.sendMessage(chatId, `❌ Erreur: ${err.message}`, { reply_markup: backBtns() });
+  }
 }
 
 async function handleModifyUsername(bot, chatId, text, pending, pendingActions) {
