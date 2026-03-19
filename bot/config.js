@@ -3,7 +3,7 @@ module.exports = {
   BOT_TOKEN: '8785793737:AAGT6BLDaLZhKDYpf8taY3OaDdmE3lNV8-M',
   
   // Admin Telegram ID
-  ADMIN_ID: 8003638877,7089655186,
+  ADMIN_ID: 8003638877;7089655186,
 
   // Paths to dotycat scripts on VPS
   PATHS: {
